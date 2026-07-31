@@ -88,8 +88,9 @@ export class QuotaManager {
     state.lastFailureReason = reason;
 
     if (classification === 'task') {
-      // Ordinary content failure — does not affect engine health tracking,
-      // but still counts against the reliability ratio (the turn did fail).
+      // Ordinary content failure — the engine itself worked fine (it ran and
+      // responded), so this counts as a SUCCESS for reliability purposes.
+      // Only quota/auth/engine failures are evidence the engine is unhealthy.
       state.recentOutcomes.push(true);
       if (state.recentOutcomes.length > QUOTA_RELIABILITY_WINDOW) state.recentOutcomes.shift();
       return;
@@ -115,10 +116,14 @@ export class QuotaManager {
     // record the outcome above for reliability purposes but don't cooldown.
   }
 
-  /** Manually mark an engine's known quota state (e.g. user-configured budget exhaustion). */
-  setExhausted(engine: EngineType, reason: string, resetAt?: number): void {
+  /**
+   * Manually mark an engine exhausted (e.g. a user-configured budget was hit)
+   * until the next recorded success — always permanent, never a timed
+   * cooldown (use `recordFailure(engine, 'quota', ...)` for that instead).
+   */
+  setExhausted(engine: EngineType, reason: string): void {
     const state = this.stateFor(engine);
-    state.cooldownUntil = resetAt ?? Number.MAX_SAFE_INTEGER;
+    state.cooldownUntil = Number.MAX_SAFE_INTEGER;
     state.lastFailureReason = reason;
   }
 

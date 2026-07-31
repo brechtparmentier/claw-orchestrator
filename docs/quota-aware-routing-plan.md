@@ -1,10 +1,13 @@
 # Quota-aware prompt routing — architectuurplan
 
-> Lokaal planningsdocument. `docs/` staat in `.gitignore` van deze fork
-> ("All documentation lives under skills/. [...] docs/ is for local process
-> scratch only and never shipped") — dit bestand wordt dus nooit gecommit of
-> gepubliceerd. Feature-documentatie voor de uiteindelijke router komt in
-> `skills/references/`, conform de conventie in `CLAUDE.md`.
+> Planningsdocument. `docs/` staat in `.gitignore` van deze fork ("All
+> documentation lives under skills/. [...] docs/ is for local process scratch
+> only and never shipped"), dus dit bestand wordt normaal nooit meegenomen
+> door `git add -A` of getoond in `git status`. Het is hier bewust met
+> `git add -f` toegevoegd zodat het op de fork/branch blijft staan als
+> naslagwerk (zie Fase 7 van startPrompt.md). Feature-documentatie voor de
+> router zelf staat in `skills/references/prompt-routing.md`, conform de
+> conventie in `CLAUDE.md`.
 
 Baseline: commit `99b6c1f` (v4.10.1), Node v24.18.1 / npm 11.16.0. Build, lint,
 format:check en `npm run test` (887/887) zijn allemaal groen zonder wijzigingen.

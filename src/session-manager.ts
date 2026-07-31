@@ -650,9 +650,8 @@ export class SessionManager {
     // off, or an explicit/persisted engine present, this block never runs
     // and the line below is byte-for-byte the pre-routing resolution.
     let engine: EngineType;
-    let routeDecision: RouteDecision | undefined;
     if (!config.engine && !persisted?.engine && this.pluginConfig.promptRouting?.enabled) {
-      routeDecision = this._promptRouter.route({});
+      const routeDecision = this._promptRouter.route({});
       engine = routeDecision.engine;
       this.logger.debug?.(
         `[PromptRouter] routed session '${name}' to '${engine}': ${routeDecision.explain.join('; ')}`,

@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import type { PromptRoutingConfig } from '../src/types.js';
 
 function getBaseUrl(): string {
   return process.env.CLAWO_API_URL || process.env.CLAUDE_CODE_API_URL || 'http://127.0.0.1:18796';
@@ -37,6 +38,43 @@ function getAuthToken(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Quota-aware routing config for standalone `serve` mode. There is no config
+ * file in this codebase (see docs/quota-aware-routing-plan.md) — env vars
+ * only, mirroring OPENCLAW_SERVE_MAX_SESSIONS/OPENCLAW_SERVE_TTL_MINUTES
+ * above:
+ *   - CLAWO_PROMPT_ROUTING_CONFIG: full PromptRoutingConfig as a JSON string
+ *     (power-user / exact control, e.g. custom priorities or engine subset).
+ *   - CLAWO_PROMPT_ROUTING=1|true: enables routing with a sensible default
+ *     (claude/codex/gemini/cursor, priorities matching the docs example).
+ * Absent both -> undefined -> routing stays off, identical to prior behavior.
+ */
+function loadPromptRoutingConfig(): PromptRoutingConfig | undefined {
+  const raw = process.env.CLAWO_PROMPT_ROUTING_CONFIG;
+  if (raw) {
+    try {
+      return JSON.parse(raw) as PromptRoutingConfig;
+    } catch {
+      console.warn('[promptRouting] CLAWO_PROMPT_ROUTING_CONFIG is not valid JSON — ignoring, routing stays disabled');
+    }
+  }
+  if (process.env.CLAWO_PROMPT_ROUTING === '1' || process.env.CLAWO_PROMPT_ROUTING === 'true') {
+    return {
+      enabled: true,
+      strategy: 'balanced',
+      fallback: true,
+      safetyMargin: 0.15,
+      engines: {
+        claude: { enabled: true, priority: 100 },
+        codex: { enabled: true, priority: 90 },
+        gemini: { enabled: true, priority: 80 },
+        cursor: { enabled: true, priority: 70 },
+      },
+    };
+  }
+  return undefined;
 }
 
 function getCliVersion(): string {
@@ -101,6 +139,7 @@ program
     const manager = new SessionManager({
       maxConcurrentSessions: maxSessions,
       sessionTtlMinutes: ttlMinutes,
+      promptRouting: loadPromptRoutingConfig(),
     });
 
     // ultraapp runtime mode (host = default, docker = opt-in for isolation)

@@ -103,5 +103,6 @@ different engine.
 
 Today only the Claude adapter surfaces a structured rate-limit signal; every
 other engine relies on message-pattern matching against `Error.message`. See
-`docs/quota-aware-routing-plan.md` (local, untracked) for the full design
-rationale and planned follow-up phases.
+`docs/quota-aware-routing-plan.md` for the full design rationale and planned
+follow-up phases (`docs/` is gitignored in this repo as local scratch, but
+that specific file was force-added to persist on this branch).

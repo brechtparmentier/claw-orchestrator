@@ -56,6 +56,26 @@ describe('PromptRouter', () => {
     expect(claudeCandidate?.excluded).toMatch(/cooldown/);
   });
 
+  it('a degraded (but not cooled-down) engine is still a candidate, just out-scored by a healthy lower-priority peer', () => {
+    // Simulated "preferred engine nearly exhausted" scenario: claude has the
+    // highest configured priority but a poor recent reliability ratio from
+    // repeated engine-level failures (not quota — those would hard-exclude
+    // via cooldown instead, see the test above). It must remain a scoreable
+    // candidate (degraded != excluded) while losing out to a healthy engine.
+    const qm = new QuotaManager();
+    qm.recordSuccess('claude');
+    for (let i = 0; i < 4; i++) qm.recordFailure('claude', 'engine');
+    qm.recordSuccess('codex');
+
+    const router = new PromptRouter(baseConfig(), qm, new CircuitBreaker());
+    const decision = router.route({});
+
+    const claudeCandidate = decision.candidates.find((c) => c.engine === 'claude');
+    expect(claudeCandidate?.excluded).toBeUndefined();
+    expect(decision.engine).toBe('codex');
+    expect(decision.score).toBeGreaterThan(claudeCandidate!.score);
+  });
+
   it('excludes an engine whose circuit breaker is open', () => {
     const cb = new CircuitBreaker();
     cb.recordFailure('claude');
