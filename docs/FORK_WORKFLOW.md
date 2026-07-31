@@ -7,6 +7,13 @@ Korte referentie voor het werken op deze fork van `Enderfga/claw-orchestrator`.
 > toegevoegd zodat het wél op de branch/PR staat — nieuwe bestanden onder
 > `docs/` worden anders stilzwijgend niet meegenomen door `git add -A` of
 > `git status`.
+>
+> **Belangrijk voor latere wijzigingen:** ook toekomstige edits aan dit
+> bestand of `docs/quota-aware-routing-plan.md` moeten opnieuw expliciet met
+> `git add -f <bestand>` gestaged worden — een gewone `git add -A` of
+> `git status` slaat ze stilzwijgend over zodra ze eenmaal getrackt zijn,
+> `git add <bestand>` zonder `-f` geeft een expliciete foutmelding
+> ("paths are ignored by one of your .gitignore files").
 
 ## Remotes (eenmalig controleren)
 
