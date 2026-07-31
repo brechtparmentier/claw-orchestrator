@@ -524,6 +524,21 @@ export class EmbeddedServer {
         return;
       }
 
+      // ─── Quota-Aware Routing ───────────────────────────────────────
+      //
+      // Deliberately a separate, additive route rather than a flag threaded
+      // into /session/start — previewRoute() never starts a session or
+      // mutates quota/circuit-breaker state, so this can never affect the
+      // existing session-start request shape or behavior.
+
+      if (path === '/route/explain') {
+        const decision = this.manager.previewRoute({
+          preferredEngine: body.preferredEngine as EngineType | undefined,
+        });
+        json(200, { ok: true, ...decision });
+        return;
+      }
+
       // ─── Health ──────────────────────────────────────────────────
 
       if (path === '/health') {

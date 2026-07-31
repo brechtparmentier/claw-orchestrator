@@ -6,6 +6,10 @@
 import type { ModelPricing, ProviderName, ModelDef } from './models.js';
 import { getAliases } from './models.js';
 export type { ModelPricing, ProviderName, ModelDef };
+
+// Re-export quota-aware routing config type (see src/quota/) for use in PluginConfig
+import type { PromptRoutingConfig } from './quota/quota-types.js';
+export type { PromptRoutingConfig, PromptRoutingEngineConfig } from './quota/quota-types.js';
 export {
   getModelPricing,
   overrideModelPricing,
@@ -504,6 +508,12 @@ export interface PluginConfig {
   proxy?: ProxyConfig;
   /** Override or extend model pricing at runtime without a new release. */
   pricingOverrides?: Record<string, Partial<ModelPricing>>;
+  /**
+   * Quota-aware prompt routing. Disabled (`enabled: false`) by default —
+   * absent entirely, Claw Orchestrator behaves exactly as before this
+   * feature existed. See docs/quota-aware-routing-plan.md.
+   */
+  promptRouting?: PromptRoutingConfig;
 }
 
 export interface ProxyConfig {

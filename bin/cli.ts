@@ -317,6 +317,25 @@ program
   });
 
 program
+  .command('route-explain')
+  .description(
+    'Preview which engine quota-aware routing would pick for a new session, without starting one (--dry-run/--explain equivalent; requires promptRouting.enabled in config)',
+  )
+  .option('--preferred-engine <engine>', 'Soft preference to weight into the score')
+  .action(async (opts) => {
+    const r = await api('/route/explain', 'POST', {
+      preferredEngine: opts.preferredEngine,
+    });
+    if (!r.ok) {
+      console.error(`Failed: ${r.error}`);
+      return;
+    }
+    console.log(`Chosen engine: ${r.engine} (score=${(r.score as number).toFixed(3)})`);
+    console.log('Explain:');
+    for (const line of r.explain as string[]) console.log(`  - ${line}`);
+  });
+
+program
   .command('session-grep <name> <pattern>')
   .description('Search session history')
   .option('-n, --limit <n>', 'Max results', '50')
