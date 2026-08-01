@@ -134,6 +134,16 @@ clawo session-grep <name> <pattern> [-n, --limit <n>]
 clawo session-compact <name> [--summary <text>]
 ```
 
+### route-explain
+
+Preview which engine [quota-aware routing](./prompt-routing.md) would pick for
+a new session, without starting one. Requires `promptRouting.enabled` in
+config.
+
+```bash
+clawo route-explain [--preferred-engine <engine>]
+```
+
 ## Agent Management
 
 ```bash

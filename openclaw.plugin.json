@@ -55,6 +55,45 @@
             "description": "Default model for fast requests"
           }
         }
+      },
+      "promptRouting": {
+        "type": "object",
+        "description": "Quota-aware engine selection for new sessions. Disabled by default — absent or enabled:false leaves engine resolution unchanged.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master feature flag for quota-aware routing"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": ["balanced"],
+            "default": "balanced"
+          },
+          "fallback": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether a quota-classified send() failure on a router-chosen session may trigger one automatic mid-conversation engine switch. Does not affect start-time routing, which always avoids cooldown/exhausted engines regardless of this setting."
+          },
+          "safetyMargin": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.15,
+            "description": "0..1 margin applied before a degraded engine is scored as unusable"
+          },
+          "engines": {
+            "type": "object",
+            "description": "Per-engine routing config, keyed by EngineType (claude, codex, gemini, cursor, agy, opencode, custom). Engines absent from this map are excluded from routing.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "priority": { "type": "number", "description": "Higher wins ties in scoring" }
+              }
+            }
+          }
+        }
       }
     }
   },

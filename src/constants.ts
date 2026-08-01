@@ -109,6 +109,17 @@ export const CIRCUIT_BREAKER_MAX_BACKOFF_MS = 300_000;
 /** Maximum failure count cap (prevents unbounded backoff growth) */
 export const CIRCUIT_BREAKER_MAX_COUNT = 10;
 
+// ─── Quota-Aware Routing ────────────────────────────────────────────────────
+
+/** Base cooldown applied after a quota-classified failure (doubles each consecutive one) */
+export const QUOTA_COOLDOWN_BASE_MS = 30_000;
+/** Maximum cooldown duration cap */
+export const QUOTA_COOLDOWN_MAX_MS = 900_000;
+/** Number of recent outcomes kept per engine for the reliability ratio */
+export const QUOTA_RELIABILITY_WINDOW = 20;
+/** Default safety margin (0..1) applied before treating a degraded engine as exhausted */
+export const DEFAULT_ROUTING_SAFETY_MARGIN = 0.15;
+
 // ─── Session Events ─────────────────────────────────────────────────────────
 
 export const SESSION_EVENT = {

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Quota-aware prompt routing (opt-in, `promptRouting.enabled`).** A new
+  `PromptRouter` can pick the best available engine for a new session based on
+  quota health, recent reliability, configured priority, and an optional
+  soft preference — deterministic, explainable (`clawo route-explain` /
+  `POST /route/explain`), and excluded-engine-aware (cooldown/exhausted/
+  circuit-breaker-open engines are skipped; `unknown` quota is not treated as
+  unusable). Disabled by default — with `promptRouting` absent or
+  `enabled: false`, engine resolution is unchanged from prior releases.
+  Routes at session-start only; an explicit `engine` on `session-start` or a
+  persisted session's engine always takes precedence over routing. See
+  `skills/references/prompt-routing.md`.
+
 ## [4.10.1] - 2026-08-01
 
 Weekly engine sweep. Two `sandboxMode: 'read-only'` guarantees did not hold and

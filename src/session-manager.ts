@@ -120,6 +120,11 @@ function makeDebounced(fn: () => void, ms: number): () => void {
 
 import { type Logger, createConsoleLogger } from './logger.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { QuotaManager } from './quota/quota-manager.js';
+import { PromptRouter } from './quota/prompt-router.js';
+import { classifyError } from './quota/classify-error.js';
+import { normalizePromptRoutingConfig } from './quota/quota-types.js';
+import type { RouteDecision, RouteInput } from './quota/quota-types.js';
 import { InboxManager, type SessionLookup } from './inbox-manager.js';
 import { sanitizeCwd, validateName } from './validation.js';
 import { PersistentClaudeSession } from './persistent-session.js';
@@ -470,6 +475,8 @@ export class SessionManager {
   private _proxyPort: number | null = null;
   private _activePids = new Map<string, number>();
   private _circuitBreaker = new CircuitBreaker();
+  private _quotaManager: QuotaManager;
+  private _promptRouter: PromptRouter;
   private _inbox = new InboxManager();
   private logger: Logger;
   private _ultraappManager: UltraappManager | null = null;
@@ -478,6 +485,13 @@ export class SessionManager {
 
   constructor(config?: Partial<PluginConfig>, logger?: Logger) {
     this.logger = logger || createConsoleLogger('SessionManager');
+    // Normalized once, up front — every missing sub-field (engines,
+    // safetyMargin, fallback, strategy) gets its documented default here, so
+    // QuotaManager/PromptRouter and every later `pluginConfig.promptRouting`
+    // read see a fully-populated object rather than risking `undefined`
+    // reaching Object.keys()/arithmetic downstream. See
+    // normalizePromptRoutingConfig's doc comment for the crash this closes.
+    const promptRouting = normalizePromptRoutingConfig(config?.promptRouting);
     this.pluginConfig = {
       claudeBin: config?.claudeBin || 'claude',
       defaultModel: config?.defaultModel,
@@ -485,12 +499,16 @@ export class SessionManager {
       defaultEffort: config?.defaultEffort || 'auto',
       maxConcurrentSessions: config?.maxConcurrentSessions || 5,
       sessionTtlMinutes: config?.sessionTtlMinutes || 120,
+      promptRouting,
     };
 
     // Apply pricing overrides if provided
     if (config?.pricingOverrides) {
       overrideModelPricing(config.pricingOverrides);
     }
+
+    this._quotaManager = new QuotaManager(Date.now, promptRouting.safetyMargin);
+    this._promptRouter = new PromptRouter(promptRouting, this._quotaManager, this._circuitBreaker);
 
     // Load persisted session registry from disk
     this.persistedSessions = loadPersistedSessions();
@@ -618,10 +636,23 @@ export class SessionManager {
       fullConfig.resolvedModel = this._resolveModel(fullConfig.model, fullConfig.modelOverrides);
     }
 
-    // Auto-inject proxy baseUrl for non-Claude models on the claude engine.
-    // Starts a local proxy server that converts Anthropic → OpenAI format
-    // and forwards to the OpenClaw gateway. Zero config required.
-    const engine: EngineType = fullConfig.engine || persisted?.engine || 'claude';
+    // Quota-aware routing — only runs when the caller left `engine` fully
+    // unspecified AND there is no persisted engine to resume onto (routing a
+    // *resumed* session onto a different engine would silently break that
+    // session's continuation, e.g. resuming a Codex thread on Claude).
+    // Behind `promptRouting.enabled` (default false/absent): with the flag
+    // off, or an explicit/persisted engine present, this block never runs
+    // and the line below is byte-for-byte the pre-routing resolution.
+    let engine: EngineType;
+    if (!config.engine && !persisted?.engine && this.pluginConfig.promptRouting?.enabled) {
+      const routeDecision = this._promptRouter.route({});
+      engine = routeDecision.engine;
+      this.logger.debug?.(
+        `[PromptRouter] routed session '${name}' to '${engine}': ${routeDecision.explain.join('; ')}`,
+      );
+    } else {
+      engine = fullConfig.engine || persisted?.engine || 'claude';
+    }
     // Write the resolved engine back so downstream consumers of the managed
     // config (agy resume-id lookups, _persistSession's registry entry) see the
     // real engine even when it came from the persisted registry.
@@ -646,11 +677,13 @@ export class SessionManager {
       await session.start();
     } catch (err) {
       this._circuitBreaker.recordFailure(engine);
+      this._quotaManager.recordFailure(engine, classifyError(err as Error), (err as Error).message);
       throw err;
     }
 
     // Engine started successfully — reset circuit breaker
     this._circuitBreaker.reset(engine);
+    this._quotaManager.recordSuccess(engine);
 
     // Track child process PID for orphan cleanup
     if (session.pid) {
@@ -745,7 +778,25 @@ export class SessionManager {
         };
       }
 
-      const result = await managed.session.send(message, sendOpts);
+      const routingEngine = managed.config.engine || 'claude';
+      let result: Awaited<ReturnType<ISession['send']>>;
+      try {
+        result = await managed.session.send(message, sendOpts);
+        this._quotaManager.recordSuccess(routingEngine);
+      } catch (err) {
+        // Classified but never retried here — mid-turn fallback is out of
+        // scope for v1 (see docs/quota-aware-routing-plan.md §4/§9); this
+        // only teaches the router to route *future* session starts away from
+        // an engine that just failed with a quota/auth signal. An ordinary
+        // task/content failure (the default classification) leaves quota
+        // state untouched.
+        this._quotaManager.recordFailure(
+          routingEngine,
+          classifyError(err as Error, managed.session.getStats()),
+          (err as Error).message,
+        );
+        throw err;
+      }
 
       // Update the resume-capable session ID if available (skip disk persist
       // for ephemeral sessions that were started with skipPersistence)
@@ -1165,6 +1216,7 @@ export class SessionManager {
       lastActivity: string | null;
     }>;
     circuitBreakers: Record<string, { failures: number; backoffUntil: string | null }>;
+    quota: ReturnType<QuotaManager['getAllStatuses']>;
   } {
     const details = Array.from(this.sessions.entries()).map(([name, managed]) => {
       const stats = managed.session.getStats();
@@ -1188,7 +1240,24 @@ export class SessionManager {
       uptime: process.uptime(),
       details,
       circuitBreakers: this._circuitBreaker.getStatus(),
+      quota: this._quotaManager.getAllStatuses(),
     };
+  }
+
+  /**
+   * Preview which engine `startSession` would pick under quota-aware routing,
+   * without starting anything — powers `--dry-run`/`--explain` (CLI
+   * `route-explain` command and `POST /route/explain`). Never mutates quota
+   * or circuit-breaker state.
+   *
+   * Throws if routing is disabled (`promptRouting.enabled` is false/absent) —
+   * there is nothing to preview when the feature flag is off.
+   */
+  previewRoute(input: RouteInput = {}): RouteDecision {
+    if (!this.pluginConfig.promptRouting?.enabled) {
+      throw new Error('Quota-aware routing is disabled (set promptRouting.enabled: true to use --dry-run/--explain)');
+    }
+    return this._promptRouter.route(input);
   }
 
   /** Return plugin version from package.json */
