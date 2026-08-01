@@ -511,7 +511,8 @@ export interface PluginConfig {
   /**
    * Quota-aware prompt routing. Disabled (`enabled: false`) by default —
    * absent entirely, Claw Orchestrator behaves exactly as before this
-   * feature existed. See docs/quota-aware-routing-plan.md.
+   * feature existed. See skills/references/prompt-routing.md for usage;
+   * docs/quota-aware-routing-plan.md for the design rationale.
    */
   promptRouting?: PromptRoutingConfig;
 }

@@ -73,10 +73,12 @@
           "fallback": {
             "type": "boolean",
             "default": true,
-            "description": "Whether a quota/auth/engine failure may route the next new session away from that engine"
+            "description": "Whether a quota-classified send() failure on a router-chosen session may trigger one automatic mid-conversation engine switch. Does not affect start-time routing, which always avoids cooldown/exhausted engines regardless of this setting."
           },
           "safetyMargin": {
             "type": "number",
+            "minimum": 0,
+            "maximum": 1,
             "default": 0.15,
             "description": "0..1 margin applied before a degraded engine is scored as unusable"
           },
