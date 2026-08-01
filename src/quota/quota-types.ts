@@ -41,7 +41,16 @@ export interface PromptRoutingConfig {
   enabled: boolean;
   /** Scoring strategy. Only 'balanced' exists in v1. */
   strategy: 'balanced';
-  /** Whether a quota/auth/engine failure may fall back to a different engine on the *next* session start. */
+  /**
+   * Whether a quota-classified failure mid-conversation may trigger an
+   * automatic, one-time engine switch for a router-chosen session (v1.1 —
+   * see docs/quota-aware-routing-plan.md). Does NOT affect start-time
+   * routing: an engine already in cooldown/exhausted is excluded from
+   * scoring at session-start regardless of this flag — that's just routing
+   * with current information, not "falling back". A session whose engine
+   * was explicitly pinned (by the caller, or resumed from a persisted
+   * session) is never auto-switched, no matter this setting.
+   */
   fallback: boolean;
   /** Safety margin (0..1) applied before a 'degraded' engine is treated as effectively unusable. */
   safetyMargin: number;

@@ -197,6 +197,15 @@ interface ManagedSession {
   claudeSessionId?: string;
   skipPersistence?: boolean;
   /**
+   * True only when quota-aware routing actually chose this session's engine
+   * (neither an explicit `engine` nor a persisted one was supplied). Gates
+   * mid-conversation fallback in sendMessage() — the router only ever
+   * manages engines it chose itself, never one the caller pinned. A session
+   * created BY a fallback is started with an explicit `engine`, so this is
+   * false for it too — at most one automatic engine switch per session.
+   */
+  routedByRouter?: boolean;
+  /**
    * Per-session send chain. Concurrent sendMessage() calls on the same session
    * MUST serialize, otherwise PersistentClaudeSession's single _streamCallbacks
    * field and shared TURN_COMPLETE listener race — the second caller would
@@ -206,6 +215,31 @@ interface ManagedSession {
    */
   sendChain?: Promise<unknown>;
 }
+
+/**
+ * SessionConfig fields safe to carry across an automatic engine switch
+ * (sendMessage's quota fallback, v1.1). Deliberately an ALLOWLIST, not an
+ * omit-list — SessionConfig has many engine-specific fields (model,
+ * resolvedModel, baseUrl, resume IDs, ultracode, codexProfile, customEngine,
+ * betas, ...) that must never leak onto a different engine's CLI invocation.
+ * A future SessionConfig field is excluded by default until explicitly
+ * added here.
+ */
+const FALLBACK_CARRY_OVER_KEYS: Array<keyof SessionConfig> = [
+  'cwd',
+  'permissionMode',
+  'maxTurns',
+  'maxBudgetUsd',
+  'systemPrompt',
+  'appendSystemPrompt',
+  'dangerouslySkipPermissions',
+  'addDir',
+  'effort',
+  'sandboxMode',
+  'bare',
+  'worktree',
+  'noSessionPersistence',
+];
 
 interface SendOptions {
   effort?: EffortLevel;
@@ -650,9 +684,11 @@ export class SessionManager {
     // off, or an explicit/persisted engine present, this block never runs
     // and the line below is byte-for-byte the pre-routing resolution.
     let engine: EngineType;
+    let routedByRouter = false;
     if (!config.engine && !persisted?.engine && this.pluginConfig.promptRouting?.enabled) {
       const routeDecision = this._promptRouter.route({});
       engine = routeDecision.engine;
+      routedByRouter = true;
       this.logger.debug?.(
         `[PromptRouter] routed session '${name}' to '${engine}': ${routeDecision.explain.join('; ')}`,
       );
@@ -705,6 +741,7 @@ export class SessionManager {
       cwd: fullConfig.cwd,
       claudeSessionId: this._sessionResumeId(engine, session),
       skipPersistence: skipPersist,
+      routedByRouter,
     };
 
     this.sessions.set(name, managed);
@@ -786,47 +823,153 @@ export class SessionManager {
 
       const routingEngine = managed.config.engine || 'claude';
       let result: Awaited<ReturnType<ISession['send']>>;
+      let activeManaged = managed;
+      let engineSwitched: SendResult['engineSwitched'];
       try {
         result = await managed.session.send(message, sendOpts);
         this._quotaManager.recordSuccess(routingEngine);
       } catch (err) {
-        // Classified but never retried here — mid-turn fallback is out of
-        // scope for v1 (see docs/quota-aware-routing-plan.md §4/§9); this
-        // only teaches the router to route *future* session starts away from
-        // an engine that just failed with a quota/auth signal. An ordinary
-        // task/content failure (the default classification) leaves quota
-        // state untouched.
-        this._quotaManager.recordFailure(
-          routingEngine,
-          classifyError(err as Error, managed.session.getStats()),
-          (err as Error).message,
-        );
-        throw err;
+        // Always classify and record — this teaches the router to route
+        // *future* session starts away from an engine that just failed with
+        // a quota/auth signal, independent of whether a live fallback fires
+        // below. An ordinary task/content failure (the default
+        // classification) leaves quota state untouched either way.
+        const classification = classifyError(err as Error, managed.session.getStats());
+        this._quotaManager.recordFailure(routingEngine, classification, (err as Error).message);
+
+        // Mid-conversation fallback (v1.1): exactly one automatic engine
+        // switch, and ONLY for a quota failure on a session the router
+        // itself chose (never a caller-pinned or resumed engine), and only
+        // when both promptRouting.enabled AND promptRouting.fallback are on.
+        const canFallback =
+          classification === 'quota' &&
+          managed.routedByRouter === true &&
+          this.pluginConfig.promptRouting?.enabled === true &&
+          this.pluginConfig.promptRouting?.fallback === true;
+
+        if (!canFallback) throw err;
+
+        const fallback = await this._attemptQuotaFallback(name, managed, message, sendOpts, err as Error);
+        result = fallback.result;
+        activeManaged = fallback.managed;
+        engineSwitched = { from: routingEngine, to: fallback.newEngine, reason: (err as Error).message };
       }
 
       // Update the resume-capable session ID if available (skip disk persist
       // for ephemeral sessions that were started with skipPersistence)
-      const resumableId = this._managedResumeId(managed);
+      const resumableId = this._managedResumeId(activeManaged);
       if (resumableId) {
-        managed.claudeSessionId = resumableId;
-        if (!managed.skipPersistence) {
-          this._persistSession(name, managed);
+        activeManaged.claudeSessionId = resumableId;
+        if (!activeManaged.skipPersistence) {
+          this._persistSession(name, activeManaged);
         }
       }
 
       if ('text' in result) {
         return {
           output: result.text,
-          sessionId: this._managedResumeId(managed),
+          sessionId: this._managedResumeId(activeManaged),
           events: [],
+          ...(engineSwitched ? { engineSwitched } : {}),
         };
       }
 
-      return { output: '', sessionId: this._managedResumeId(managed), events: [] };
+      return {
+        output: '',
+        sessionId: this._managedResumeId(activeManaged),
+        events: [],
+        ...(engineSwitched ? { engineSwitched } : {}),
+      };
     } finally {
       releaseChain();
       // If this was the tail of the chain, clear it so memory doesn't grow.
       if (managed.sendChain === link) managed.sendChain = undefined;
+      // NOTE: on the fallback path above, this releases the OLD (now
+      // detached) ManagedSession's chain — correct: it unblocks anyone
+      // queued behind THIS turn. A concurrent sendMessage() that was queued
+      // and resumes after release will find `this.sessions.get(name)` now
+      // points at the NEW post-fallback ManagedSession, fail the identity
+      // check just above the try block, and get a clear
+      // "was stopped while a prior turn was in flight" error rather than
+      // silently racing against a session it never saw start. No attempt is
+      // made to hand the queue off to the new session.
+    }
+  }
+
+  /**
+   * Attempt exactly one automatic engine switch after a quota-classified
+   * send() failure on a router-chosen session. No conversation context can
+   * be transferred across engines — the new session starts fresh under the
+   * same name, dropping every engine-specific config field (see
+   * FALLBACK_CARRY_OVER_KEYS). On any failure in this path, the ORIGINAL
+   * send error is preserved as the primary error (via `cause`) — a caller
+   * must never see a fallback-plumbing error in place of the real failure.
+   */
+  private async _attemptQuotaFallback(
+    name: string,
+    managed: ManagedSession,
+    message: string | unknown[],
+    sendOpts: Record<string, unknown>,
+    originalErr: Error,
+  ): Promise<{ result: Awaited<ReturnType<ISession['send']>>; managed: ManagedSession; newEngine: EngineType }> {
+    const oldEngine = managed.config.engine || 'claude';
+
+    let decision: RouteDecision;
+    try {
+      // The engine that just failed is already in quota cooldown (recorded
+      // by the caller just before this method runs), so it's naturally
+      // excluded from this candidate set — no need to pass it explicitly.
+      decision = this._promptRouter.route({});
+    } catch (routeErr) {
+      // The ORIGINAL error is the primary message — a caller (including HTTP
+      // callers, whose error handler only reads `.message`, never `.cause`)
+      // must see the real failure text, not just fallback-plumbing prose.
+      throw new Error(
+        `${originalErr.message} (also tried falling back from '${oldEngine}' to another engine, but none is available: ${(routeErr as Error).message})`,
+        { cause: originalErr },
+      );
+    }
+
+    const newEngine = decision.engine;
+    this.logger.warn?.(
+      `[PromptRouter] session '${name}' hit a quota failure on '${oldEngine}', switching to '${newEngine}' — conversation context is NOT transferred`,
+    );
+
+    const carryOver: Partial<SessionConfig> = {};
+    for (const key of FALLBACK_CARRY_OVER_KEYS) {
+      const value = managed.config[key];
+      if (value !== undefined) (carryOver as Record<string, unknown>)[key] = value;
+    }
+
+    // keepPersisted: false — this session name must NOT resume onto the
+    // quota-exhausted engine next time it's started; it's being fully
+    // replaced, not paused.
+    await this.stopSession(name, { keepPersisted: false });
+
+    try {
+      await this.startSession({ ...carryOver, name, engine: newEngine });
+    } catch (startErr) {
+      throw new Error(
+        `${originalErr.message} (also tried falling back from '${oldEngine}' to '${newEngine}', but it failed to start: ${(startErr as Error).message})`,
+        { cause: originalErr },
+      );
+    }
+
+    const newManaged = this._getSession(name);
+    try {
+      const result = await newManaged.session.send(message, sendOpts);
+      this._quotaManager.recordSuccess(newEngine);
+      return { result, managed: newManaged, newEngine };
+    } catch (retryErr) {
+      this._quotaManager.recordFailure(
+        newEngine,
+        classifyError(retryErr as Error, newManaged.session.getStats()),
+        (retryErr as Error).message,
+      );
+      throw new Error(
+        `${originalErr.message} (also tried falling back from '${oldEngine}' to '${newEngine}', but it also failed: ${(retryErr as Error).message})`,
+        { cause: originalErr },
+      );
     }
   }
 

@@ -389,6 +389,13 @@ export interface SendResult {
   sessionId?: string;
   error?: string;
   events: StreamEvent[];
+  /**
+   * Present only when a quota-classified failure mid-conversation triggered
+   * an automatic engine switch (see docs/quota-aware-routing-plan.md v1.1).
+   * Conversation context/history is NOT transferred across engines — `to`
+   * starts a fresh session under the same name.
+   */
+  engineSwitched?: { from: EngineType; to: EngineType; reason: string };
 }
 
 export interface GrepMatch {

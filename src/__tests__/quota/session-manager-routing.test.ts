@@ -141,12 +141,15 @@ const { SessionManager } = await import('../../session-manager.js');
 
 let engineCalls: string[] = [];
 let failStartFor: Record<string, Error> = {};
+let failSendFor: Record<string, Error> = {};
+let configCalls: SessionConfig[] = [];
 
 function patchCreateSession(manager: InstanceType<typeof SessionManager>): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (manager as any)._createSession = (engine: string, _config: SessionConfig): ISession => {
+  (manager as any)._createSession = (engine: string, config: SessionConfig): ISession => {
     engineCalls.push(engine);
-    return new MockSession(failStartFor[engine]);
+    configCalls.push(config);
+    return new MockSession(failStartFor[engine], failSendFor[engine]);
   };
 }
 
@@ -168,6 +171,8 @@ describe('Quota-aware routing — SessionManager integration', () => {
   beforeEach(() => {
     engineCalls = [];
     failStartFor = {};
+    failSendFor = {};
+    configCalls = [];
   });
 
   describe('regression: routing must never change existing behavior unless explicitly enabled', () => {
@@ -290,6 +295,129 @@ describe('Quota-aware routing — SessionManager integration', () => {
       await manager.startSession({ name: 'h1', cwd: '/tmp' });
       const health = manager.health();
       expect(health.quota.claude?.state).toBe('available');
+      await manager.shutdown();
+    });
+  });
+
+  describe('mid-conversation fallback (v1.1)', () => {
+    it('a quota-classified send() failure on a router-chosen session triggers exactly one automatic engine switch', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb1', cwd: '/tmp' }); // routed -> claude
+      expect(engineCalls).toEqual(['claude']);
+
+      const result = await manager.sendMessage('fb1', 'hello');
+      expect(engineCalls).toEqual(['claude', 'codex']); // fallback started a new codex session
+      expect(result.output).toBe('response: hello'); // the retried send succeeded on codex
+      expect(result.engineSwitched).toEqual({
+        from: 'claude',
+        to: 'codex',
+        reason: expect.stringContaining('rate limit'),
+      });
+      await manager.shutdown();
+    });
+
+    it('does NOT fall back when promptRouting.fallback is false', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig({ fallback: false }) });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb2', cwd: '/tmp' });
+      await expect(manager.sendMessage('fb2', 'hello')).rejects.toThrow('rate limit');
+      expect(engineCalls).toEqual(['claude']); // no fallback session ever created
+      await manager.shutdown();
+    });
+
+    it('does NOT fall back on a caller-pinned engine, even with fallback enabled', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb3', cwd: '/tmp', engine: 'claude' }); // explicit -> not routedByRouter
+      await expect(manager.sendMessage('fb3', 'hello')).rejects.toThrow('rate limit');
+      expect(engineCalls).toEqual(['claude']);
+      await manager.shutdown();
+    });
+
+    it('does NOT fall back on an ordinary task/content failure', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('generated code failed an assertion');
+
+      await manager.startSession({ name: 'fb4', cwd: '/tmp' }); // routed
+      await expect(manager.sendMessage('fb4', 'hello')).rejects.toThrow('assertion');
+      expect(engineCalls).toEqual(['claude']); // no fallback attempted for a task failure
+      await manager.shutdown();
+    });
+
+    it('drops engine-specific config (model, baseUrl) on the fallback session, keeps engine-agnostic fields', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb5', cwd: '/tmp/project', model: 'opus', maxTurns: 7 });
+      await manager.sendMessage('fb5', 'hello');
+
+      const codexConfig = configCalls.find((c) => c.engine === 'codex');
+      expect(codexConfig?.model).toBeUndefined();
+      expect(codexConfig?.baseUrl).toBeUndefined();
+      expect(codexConfig?.resolvedModel).toBeUndefined();
+      expect(codexConfig?.cwd).toBe('/tmp/project'); // carried over (allowlisted, engine-agnostic)
+      expect(codexConfig?.maxTurns).toBe(7); // carried over
+      await manager.shutdown();
+    });
+
+    it('a concurrent sender queued behind a fallback-triggered turn gets a clear error, not a silent race', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb-race', cwd: '/tmp' });
+
+      const call1 = manager.sendMessage('fb-race', 'first');
+      const call2 = manager.sendMessage('fb-race', 'second');
+      const [result1, result2] = await Promise.allSettled([call1, call2]);
+
+      expect(result1.status).toBe('fulfilled');
+      if (result1.status === 'fulfilled') {
+        expect(result1.value.engineSwitched?.to).toBe('codex');
+      }
+      expect(result2.status).toBe('rejected');
+      if (result2.status === 'rejected') {
+        expect((result2.reason as Error).message).toMatch(/was stopped while a prior turn was in flight/);
+      }
+      await manager.shutdown();
+    });
+
+    it('when no fallback engine is available, the ORIGINAL send error is preserved (not a routing-plumbing error)', async () => {
+      const manager = new SessionManager({
+        promptRouting: routingConfig({ engines: { claude: { enabled: true, priority: 100 } } }), // only one engine configured
+      });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      await manager.startSession({ name: 'fb6', cwd: '/tmp' });
+      await expect(manager.sendMessage('fb6', 'hello')).rejects.toThrow('rate limit');
+      expect(engineCalls).toEqual(['claude']); // no second engine to fall back to
+      await manager.shutdown();
+    });
+
+    it('attempts at most one automatic switch — a failure on the fallback engine is not itself retried', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+      failSendFor.codex = new Error('rate limit exceeded on codex too');
+
+      await manager.startSession({ name: 'fb7', cwd: '/tmp' }); // routed -> claude
+      await expect(manager.sendMessage('fb7', 'hello')).rejects.toThrow('rate limit exceeded, please retry later');
+
+      // Exactly claude then codex — no third engine attempted, even though
+      // codex also failed with a quota-classified error. The fallback
+      // session was started with an explicit engine, so `routedByRouter` is
+      // false for it and sendMessage's fallback guard never fires again.
+      expect(engineCalls).toEqual(['claude', 'codex']);
       await manager.shutdown();
     });
   });
