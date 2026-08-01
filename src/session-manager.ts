@@ -123,6 +123,7 @@ import { CircuitBreaker } from './circuit-breaker.js';
 import { QuotaManager } from './quota/quota-manager.js';
 import { PromptRouter } from './quota/prompt-router.js';
 import { classifyError } from './quota/classify-error.js';
+import { normalizePromptRoutingConfig } from './quota/quota-types.js';
 import type { RouteDecision, RouteInput } from './quota/quota-types.js';
 import { InboxManager, type SessionLookup } from './inbox-manager.js';
 import { sanitizeCwd, validateName } from './validation.js';
@@ -183,7 +184,6 @@ import {
   STOP_SIGKILL_DELAY_MS,
   SESSION_EVENT,
   DEFAULT_HISTORY_LIMIT,
-  DEFAULT_ROUTING_SAFETY_MARGIN,
 } from './constants.js';
 
 // ─── Internal Types ──────────────────────────────────────────────────────────
@@ -519,6 +519,13 @@ export class SessionManager {
 
   constructor(config?: Partial<PluginConfig>, logger?: Logger) {
     this.logger = logger || createConsoleLogger('SessionManager');
+    // Normalized once, up front — every missing sub-field (engines,
+    // safetyMargin, fallback, strategy) gets its documented default here, so
+    // QuotaManager/PromptRouter and every later `pluginConfig.promptRouting`
+    // read see a fully-populated object rather than risking `undefined`
+    // reaching Object.keys()/arithmetic downstream. See
+    // normalizePromptRoutingConfig's doc comment for the crash this closes.
+    const promptRouting = normalizePromptRoutingConfig(config?.promptRouting);
     this.pluginConfig = {
       claudeBin: config?.claudeBin || 'claude',
       defaultModel: config?.defaultModel,
@@ -526,7 +533,7 @@ export class SessionManager {
       defaultEffort: config?.defaultEffort || 'auto',
       maxConcurrentSessions: config?.maxConcurrentSessions || 5,
       sessionTtlMinutes: config?.sessionTtlMinutes || 120,
-      promptRouting: config?.promptRouting,
+      promptRouting,
     };
 
     // Apply pricing overrides if provided
@@ -534,21 +541,8 @@ export class SessionManager {
       overrideModelPricing(config.pricingOverrides);
     }
 
-    this._quotaManager = new QuotaManager(
-      Date.now,
-      this.pluginConfig.promptRouting?.safetyMargin ?? DEFAULT_ROUTING_SAFETY_MARGIN,
-    );
-    this._promptRouter = new PromptRouter(
-      this.pluginConfig.promptRouting ?? {
-        enabled: false,
-        strategy: 'balanced',
-        fallback: false,
-        safetyMargin: DEFAULT_ROUTING_SAFETY_MARGIN,
-        engines: {},
-      },
-      this._quotaManager,
-      this._circuitBreaker,
-    );
+    this._quotaManager = new QuotaManager(Date.now, promptRouting.safetyMargin);
+    this._promptRouter = new PromptRouter(promptRouting, this._quotaManager, this._circuitBreaker);
 
     // Load persisted session registry from disk
     this.persistedSessions = loadPersistedSessions();

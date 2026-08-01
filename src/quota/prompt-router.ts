@@ -84,15 +84,16 @@ export class PromptRouter {
         continue;
       }
 
+      const safePriority = this._safePriority(engineCfg.priority);
       const quotaHealth = quotaHealthFactor(quota.state, this.config.safetyMargin);
       const reliability = this.quotaManager.getReliability(engine);
-      const preference = input.preferredEngine === engine ? 1 : this._normalizedPriority(engineCfg.priority);
+      const preference = input.preferredEngine === engine ? 1 : this._normalizedPriority(safePriority);
       const score = quotaHealth * reliability * preference;
 
       candidates.push({ engine, score });
       explain.push(
         `${engine}: score=${score.toFixed(3)} ` +
-          `(quota=${quota.state}:${quotaHealth.toFixed(2)}, reliability=${reliability.toFixed(2)}, preference=${preference.toFixed(2)}, priority=${engineCfg.priority})`,
+          `(quota=${quota.state}:${quotaHealth.toFixed(2)}, reliability=${reliability.toFixed(2)}, preference=${preference.toFixed(2)}, priority=${safePriority})`,
       );
     }
 
@@ -122,8 +123,8 @@ export class PromptRouter {
         continue;
       }
       if (candidate.score === best.score) {
-        const bestPriority = this.config.engines[best.engine]?.priority ?? 0;
-        const candidatePriority = this.config.engines[candidate.engine]?.priority ?? 0;
+        const bestPriority = this._safePriority(this.config.engines[best.engine]?.priority);
+        const candidatePriority = this._safePriority(this.config.engines[candidate.engine]?.priority);
         if (candidatePriority > bestPriority) {
           best = candidate;
         }
@@ -143,5 +144,20 @@ export class PromptRouter {
     // otherwise an engine with priority >= ~100 could tie or beat an
     // explicitly preferred engine on this factor alone.
     return Math.min(0.95, 0.5 + Math.max(0, priority) / 1000);
+  }
+
+  /**
+   * `PromptRoutingEngineConfig.priority` is typed as a required `number`, but
+   * runtime config (the CLAWO_PROMPT_ROUTING_CONFIG env var's raw JSON, or an
+   * OpenClaw host config) is never actually type-checked — a config that
+   * omits `priority`, or sets it to something non-numeric, would otherwise
+   * turn `NaN` into the score and silently break winner selection
+   * (NaN comparisons are always false, so a NaN-scored engine can never win
+   * a tie and can corrupt the `explain` trace). Missing/invalid -> 0, the
+   * same "no configured preference" value used elsewhere for an absent
+   * engine entry.
+   */
+  private _safePriority(priority: number | undefined): number {
+    return typeof priority === 'number' && Number.isFinite(priority) ? priority : 0;
   }
 }

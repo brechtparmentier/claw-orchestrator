@@ -2,6 +2,7 @@
  * Shared types for quota-aware prompt routing.
  */
 
+import { DEFAULT_ROUTING_SAFETY_MARGIN } from '../constants.js';
 import type { EngineType } from '../types.js';
 
 // ─── Quota State ─────────────────────────────────────────────────────────────
@@ -80,4 +81,32 @@ export interface RouteInput {
   preferredEngine?: EngineType;
   /** Explicit engine override (hard — routing is skipped entirely). */
   explicitEngine?: EngineType;
+}
+
+/**
+ * Fill in every missing field with its documented default. Runtime config
+ * (the CLAWO_PROMPT_ROUTING_CONFIG env var's raw JSON, or an OpenClaw host
+ * config) is never actually type-checked against `PromptRoutingConfig` —
+ * a partial object like `{ enabled: true }` would otherwise reach
+ * `PromptRouter`/`QuotaManager` with `engines`/`safetyMargin` `undefined`,
+ * which crashes `Object.keys(undefined)` in `PromptRouter.route()` and
+ * produces `NaN` scores. Always run config through this before using it.
+ */
+export function normalizePromptRoutingConfig(input: Partial<PromptRoutingConfig> | undefined): PromptRoutingConfig {
+  const rawSafetyMargin = input?.safetyMargin;
+  // Clamped to [0, 1], not just "finite" — an out-of-range value (e.g. a
+  // negative margin) would otherwise let a 'degraded' engine outscore an
+  // 'available' one in quotaHealthFactor's `1 - safetyMargin`, inverting the
+  // scoring semantics instead of just producing a slightly-off number.
+  const safetyMargin =
+    typeof rawSafetyMargin === 'number' && Number.isFinite(rawSafetyMargin)
+      ? Math.min(1, Math.max(0, rawSafetyMargin))
+      : DEFAULT_ROUTING_SAFETY_MARGIN;
+  return {
+    enabled: input?.enabled ?? false,
+    strategy: input?.strategy ?? 'balanced',
+    fallback: input?.fallback ?? false,
+    safetyMargin,
+    engines: input?.engines ?? {},
+  };
 }

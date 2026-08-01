@@ -297,6 +297,20 @@ describe('Quota-aware routing — SessionManager integration', () => {
       expect(health.quota.claude?.state).toBe('available');
       await manager.shutdown();
     });
+
+    it('a minimal promptRouting config (only `enabled`) does not crash — missing sub-fields are defaulted', async () => {
+      // Config normalization regression: PromptRouter/QuotaManager used to
+      // receive `engines: undefined` straight from a partial config object,
+      // which crashed Object.keys(undefined) inside PromptRouter.route().
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const manager = new SessionManager({ promptRouting: { enabled: true } as any });
+      patchCreateSession(manager);
+
+      // No engines configured -> a clean, catchable "no engine available"
+      // error, not a raw TypeError from Object.keys(undefined).
+      expect(() => manager.previewRoute({})).toThrow(/no engine available/);
+      await manager.shutdown();
+    });
   });
 
   describe('mid-conversation fallback (v1.1)', () => {

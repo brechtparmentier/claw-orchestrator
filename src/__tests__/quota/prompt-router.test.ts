@@ -155,4 +155,26 @@ describe('PromptRouter', () => {
     expect(decision.explain.length).toBeGreaterThanOrEqual(baseConfig().engines ? 4 : 0);
     expect(decision.explain.some((line) => line.startsWith('chosen:'))).toBe(true);
   });
+
+  it('a missing/non-numeric priority never produces a NaN score (runtime JSON config is not type-checked)', () => {
+    // Simulates a hand-written CLAWO_PROMPT_ROUTING_CONFIG JSON blob that
+    // omits `priority` — the TS type says it's required, but nothing
+    // enforces that at runtime.
+    const config = baseConfig({
+      engines: {
+        claude: { enabled: true } as unknown as { enabled: boolean; priority: number },
+        codex: { enabled: true, priority: 50 },
+      },
+    });
+    const router = new PromptRouter(config, new QuotaManager(), new CircuitBreaker());
+    const decision = router.route({});
+
+    expect(Number.isNaN(decision.score)).toBe(false);
+    for (const candidate of decision.candidates) {
+      expect(Number.isNaN(candidate.score)).toBe(false);
+    }
+    // Missing priority normalizes to 0 — codex (priority 50) should win.
+    expect(decision.engine).toBe('codex');
+    expect(decision.explain.some((line) => line.includes('priority=0'))).toBe(true);
+  });
 });
