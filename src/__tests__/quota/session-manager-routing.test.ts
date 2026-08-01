@@ -35,6 +35,7 @@ class MockSession extends EventEmitter implements ISession {
   constructor(
     private failStartWith?: Error,
     private failSendWith?: Error,
+    private failStopWith?: Error,
   ) {
     super();
   }
@@ -54,7 +55,9 @@ class MockSession extends EventEmitter implements ISession {
     this.sessionId = `mock-${Math.random().toString(36).slice(2)}`;
     return this;
   }
-  stop(): void {}
+  stop(): void {
+    if (this.failStopWith) throw this.failStopWith;
+  }
   pause(): void {
     this._isPaused = true;
   }
@@ -142,6 +145,7 @@ const { SessionManager } = await import('../../session-manager.js');
 let engineCalls: string[] = [];
 let failStartFor: Record<string, Error> = {};
 let failSendFor: Record<string, Error> = {};
+let failStopFor: Record<string, Error> = {};
 let configCalls: SessionConfig[] = [];
 
 function patchCreateSession(manager: InstanceType<typeof SessionManager>): void {
@@ -149,7 +153,7 @@ function patchCreateSession(manager: InstanceType<typeof SessionManager>): void 
   (manager as any)._createSession = (engine: string, config: SessionConfig): ISession => {
     engineCalls.push(engine);
     configCalls.push(config);
-    return new MockSession(failStartFor[engine], failSendFor[engine]);
+    return new MockSession(failStartFor[engine], failSendFor[engine], failStopFor[engine]);
   };
 }
 
@@ -172,6 +176,7 @@ describe('Quota-aware routing — SessionManager integration', () => {
     engineCalls = [];
     failStartFor = {};
     failSendFor = {};
+    failStopFor = {};
     configCalls = [];
   });
 
@@ -432,6 +437,33 @@ describe('Quota-aware routing — SessionManager integration', () => {
       // session was started with an explicit engine, so `routedByRouter` is
       // false for it and sendMessage's fallback guard never fires again.
       expect(engineCalls).toEqual(['claude', 'codex']);
+      await manager.shutdown();
+    });
+
+    it('preserves skipPersistence across a fallback switch', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await manager.startSession({ name: 'fb8', cwd: '/tmp', skipPersistence: true } as any);
+      await manager.sendMessage('fb8', 'hello');
+
+      const codexConfig = configCalls.find((c) => c.engine === 'codex') as unknown as { skipPersistence?: boolean };
+      expect(codexConfig?.skipPersistence).toBe(true);
+      await manager.shutdown();
+    });
+
+    it('when stopping the old session fails during fallback, the ORIGINAL send error is still primary', async () => {
+      const manager = new SessionManager({ promptRouting: routingConfig() });
+      patchCreateSession(manager);
+      failSendFor.claude = new Error('rate limit exceeded, please retry later');
+      failStopFor.claude = new Error('boom: failed to kill subprocess');
+
+      await manager.startSession({ name: 'fb9', cwd: '/tmp' });
+      await expect(manager.sendMessage('fb9', 'hello')).rejects.toThrow('rate limit exceeded, please retry later');
+      // The stop-plumbing failure never even got to start a fallback engine.
+      expect(engineCalls).toEqual(['claude']);
       await manager.shutdown();
     });
   });

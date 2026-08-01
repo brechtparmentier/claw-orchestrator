@@ -929,16 +929,31 @@ export class SessionManager {
       `[PromptRouter] session '${name}' hit a quota failure on '${oldEngine}', switching to '${newEngine}' — conversation context is NOT transferred`,
     );
 
-    const carryOver: Partial<SessionConfig> = {};
+    const carryOver: Record<string, unknown> = {};
     for (const key of FALLBACK_CARRY_OVER_KEYS) {
       const value = managed.config[key];
-      if (value !== undefined) (carryOver as Record<string, unknown>)[key] = value;
+      if (value !== undefined) carryOver[key] = value;
     }
+    // skipPersistence lives on ManagedSession, not SessionConfig (it's read
+    // via a loose cast in _doStartSession — see the openai-compat bridge for
+    // the established calling convention). Must be carried explicitly:
+    // otherwise an originally-ephemeral session would silently start being
+    // written to ~/.openclaw/claude-sessions.json after a quota fallback.
+    if (managed.skipPersistence) carryOver.skipPersistence = true;
 
     // keepPersisted: false — this session name must NOT resume onto the
     // quota-exhausted engine next time it's started; it's being fully
-    // replaced, not paused.
-    await this.stopSession(name, { keepPersisted: false });
+    // replaced, not paused. Wrapped like the steps below: if stopSession()
+    // itself throws, the ORIGINAL quota error must still be what the caller
+    // sees, not a stop-plumbing error in its place.
+    try {
+      await this.stopSession(name, { keepPersisted: false });
+    } catch (stopErr) {
+      throw new Error(
+        `${originalErr.message} (also tried falling back from '${oldEngine}' to '${newEngine}', but stopping the old session failed: ${(stopErr as Error).message})`,
+        { cause: originalErr },
+      );
+    }
 
     try {
       await this.startSession({ ...carryOver, name, engine: newEngine });
