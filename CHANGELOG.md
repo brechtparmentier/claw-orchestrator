@@ -17,9 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   circuit-breaker-open engines are skipped; `unknown` quota is not treated as
   unusable). Disabled by default — with `promptRouting` absent or
   `enabled: false`, engine resolution is unchanged from prior releases.
-  Routes at session-start only; an explicit `engine` on `session-start` or a
+  Routes at session-start; an explicit `engine` on `session-start` or a
   persisted session's engine always takes precedence over routing. See
   `skills/references/prompt-routing.md`.
+- **Mid-conversation quota fallback (opt-in, `promptRouting.fallback`).** A
+  `session-send` call that fails with a quota-classified error on a
+  router-chosen session now triggers at most one automatic engine switch —
+  stop, restart under the same name on the next available engine, retry the
+  message once. No conversation context is transferred (not possible across
+  engines); engine-specific config (model, resume IDs, ...) is dropped, and
+  the result's `engineSwitched: { from, to, reason }` field reports the
+  switch to the caller. Never applies to a caller-pinned or resumed engine,
+  regardless of this setting.
 
 ## [4.10.1] - 2026-08-01
 

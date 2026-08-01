@@ -7,11 +7,41 @@ Disabled by default — with no `promptRouting` config (or
 as it always has: `engine` (if given) → the persisted session's engine (if
 resuming) → `'claude'`.
 
-Routes at **session start only**. An explicit `engine` on `session-start`, or
-a persisted session's engine, always takes precedence over routing — the
-router never runs in those cases. Mid-conversation (per-`session-send`)
-rerouting is not implemented; a quota/auth-classified failure only teaches
-the router to route the *next new session* away from that engine.
+A quota-classified failure mid-conversation can also trigger **one**
+automatic engine switch (v1.1) — but only for a session whose engine the
+router itself chose. An explicit `engine` on `session-start`, or a resumed
+persisted session's engine, always takes precedence over routing — the
+router never manages an engine it didn't pick, at start *or* mid-conversation.
+This is the single governing rule for the whole feature: **the router only
+ever manages engines it chose itself.**
+
+## Mid-conversation fallback (v1.1)
+
+When `promptRouting.fallback: true` (see config below) and a `session-send`
+call fails with a `'quota'`-classified error on a router-chosen session,
+`sendMessage` will:
+
+1. Record the failure (as always — this also happens with `fallback: false`,
+   it just teaches *future* session-starts to avoid the engine).
+2. Re-run routing, excluding the just-failed engine (it's now in cooldown).
+3. Stop the current session and start a **new** session under the same name
+   on the newly routed engine — **no conversation context is transferred**;
+   there is no cross-engine way to carry over history, so the new session
+   starts fresh. Engine-specific config (`model`, `resolvedModel`, `baseUrl`,
+   resume IDs, ...) is dropped; engine-agnostic settings (`cwd`,
+   `permissionMode`, `maxTurns`, `systemPrompt`, ...) are carried over.
+4. Retry the failed message once on the new session.
+
+The result's `engineSwitched: { from, to, reason }` field is set when this
+happens, so callers can surface "this conversation lost context, engine
+switched from X to Y" to the user.
+
+**At most one automatic switch per session.** The fallback session is
+started with an explicit `engine`, so it is never itself router-chosen —
+if it also fails, that failure just propagates (no cascading engine-hopping).
+If no fallback engine is available, or the fallback also fails, the
+**original** error is what the caller sees (with the fallback attempt's
+detail appended) — never a routing-plumbing error in its place.
 
 ## Enabling it
 
@@ -42,6 +72,11 @@ Add a `promptRouting` block to the plugin config (`PluginConfig` in
   wins.
 - `safetyMargin` (0–1) controls how much recent-reliability drop is tolerated
   before an engine is scored as `degraded` rather than `available`.
+- `fallback` gates the mid-conversation switch described above — **only**
+  that. It has no effect on start-time routing: an engine already in
+  cooldown/exhausted is excluded from scoring at session-start regardless of
+  this setting (that's just routing with current information, not a
+  "fallback").
 
 ## How an engine is chosen
 

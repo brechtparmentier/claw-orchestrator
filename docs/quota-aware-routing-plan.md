@@ -450,11 +450,25 @@ bestaande `GEMINI_BIN`/`AGY_BIN`-stijl env-overrides.
    MCP-tool-parameter), automatische cooldown na gesimuleerde rate-limit,
    unit tests met fake engines, config-default zoals §6, feature-vlag uit
    (`enabled: false`) door default.
-2. **v1.1 — mid-sessie fallback bij live quota-fout.** Router grijpt niet
-   alleen in bij `startSession`, maar `sendMessage` vangt een
-   `classifyError() === 'quota'`-fout op, stopt de huidige sessie, en herstart
-   met de eerstvolgende beschikbare engine (adresseert risico 1 uit §4).
-   Vereist besluit over sessie-continuïteit (context/geschiedenis overdragen).
+2. **v1.1 — mid-sessie fallback bij live quota-fout. GEÏMPLEMENTEERD**
+   (`feat/quota-aware-routing-v1.1`, gestapeld op v1). `sendMessage` vangt
+   een `classifyError() === 'quota'`-fout op, en — uitsluitend als de
+   sessie's engine door de router zelf gekozen was (`routedByRouter`, nooit
+   een expliciete of hervatte engine) én `promptRouting.fallback: true` —
+   stopt de huidige sessie en herstart onder dezelfde naam op de
+   eerstvolgende beschikbare engine, waarna het bericht éénmalig opnieuw
+   wordt verstuurd. Besluit over sessie-continuïteit (risico 1 uit §4): géén
+   contextoverdracht — technisch onmogelijk tussen verschillende CLI's/
+   protocollen; de nieuwe sessie start vers, alleen engine-agnostische config
+   (`cwd`, `permissionMode`, `maxTurns`, …) wordt overgenomen, en de caller
+   krijgt dit terug via `SendResult.engineSwitched`. Precies één automatische
+   switch per sessie (de fallback-sessie wordt met een expliciete engine
+   gestart, dus zelf nooit opnieuw router-gekozen — geen cascaderende
+   engine-hopping). Bij falen van de fallback zelf blijft de oorspronkelijke
+   fout leidend (via `Error.cause`, maar ook letterlijk in de top-level
+   `.message`, omdat HTTP-foutafhandeling elders in de codebase alleen
+   `.message` leest, nooit `.cause`). Zie
+   `skills/references/prompt-routing.md` voor het volledige gedrag.
 3. **v1.2 — per-engine machineleesbare quota-check**, indien en zodra een CLI
    (Claude, Codex, …) een officieel `--usage`/`--quota`-commando aanbiedt.
    Vervangt bron 1 in de `QuotaProvider`-prioriteitenlijst van "nog niet
