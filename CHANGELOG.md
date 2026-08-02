@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the result's `engineSwitched: { from, to, reason }` field reports the
   switch to the caller. Never applies to a caller-pinned or resumed engine,
   regardless of this setting.
+- **Official Codex quota snapshots (quota routing v1.2).** When Codex is an
+  enabled routing candidate, one lazy shared App Server connection now reads
+  `account/rateLimits/read` before routing and maps both single- and
+  multi-bucket primary/secondary windows onto the existing quota states for
+  `codex` and `codex-app`. The read is strictly non-mutating, starts no task or
+  turn, has configurable timeout/TTL settings, and fails safely to `unknown`.
 
 ## [4.10.1] - 2026-08-01
 

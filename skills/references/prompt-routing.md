@@ -15,6 +15,30 @@ router never manages an engine it didn't pick, at start *or* mid-conversation.
 This is the single governing rule for the whole feature: **the router only
 ever manages engines it chose itself.**
 
+## Official Codex quota snapshots (v1.2)
+
+When routing is enabled and either `codex` or `codex-app` is an enabled
+candidate, `session-start` first performs the official, read-only Codex App
+Server request `account/rateLimits/read`. A single lazy App Server account
+connection is reused across routing decisions; it initializes the protocol but
+never starts a thread, turn, prompt, or task. The implementation never calls
+`account/rateLimitResetCredit/consume`.
+
+Both the backward-compatible `rateLimits` bucket and the current
+`rateLimitsByLimitId` map are supported. All primary and secondary windows are
+considered; the most-used window wins, and any reached bucket excludes Codex
+until its conservative (latest applicable) `resetsAt`. Usage at or above
+`(1 - safetyMargin) × 100` is `degraded`. Missing/invalid data, unsupported
+authentication, protocol errors, and timeouts produce `unknown`, which remains
+scoreable.
+
+One account snapshot applies to both `codex` and `codex-app`: they are two
+transports over the same authenticated Codex service and metered account
+buckets. The read has a 1.5-second default timeout and a 30-second TTL cache,
+including for `unknown`, so provider failure cannot repeatedly block routing.
+`route-explain` remains a pure synchronous preview and uses the latest cached
+observation; it never starts the quota connection itself.
+
 ## Mid-conversation fallback (v1.1)
 
 When `promptRouting.fallback: true` (see config below) and a `session-send`
@@ -55,6 +79,10 @@ Add a `promptRouting` block to the plugin config (`PluginConfig` in
     "strategy": "balanced",
     "fallback": true,
     "safetyMargin": 0.15,
+    "codexRateLimits": {
+      "timeoutMs": 1500,
+      "ttlMs": 30000
+    },
     "engines": {
       "claude": { "enabled": true, "priority": 100 },
       "codex": { "enabled": true, "priority": 90 },
@@ -71,7 +99,10 @@ Add a `promptRouting` block to the plugin config (`PluginConfig` in
 - `priority` only affects tie-breaking between healthy candidates — higher
   wins.
 - `safetyMargin` (0–1) controls how much recent-reliability drop is tolerated
-  before an engine is scored as `degraded` rather than `available`.
+  and marks official Codex usage at `(1 - safetyMargin) × 100` or higher as
+  `degraded`.
+- `codexRateLimits.timeoutMs` and `.ttlMs` bound the official read latency and
+  cache lifetime. Invalid/non-positive values fall back to 1500 ms and 30000 ms.
 - `fallback` gates the mid-conversation switch described above — **only**
   that. It has no effect on start-time routing: an engine already in
   cooldown/exhausted is excluded from scoring at session-start regardless of
@@ -136,8 +167,9 @@ success; `'engine'` (spawn/CLI failures) is left to the circuit breaker;
 ordinary content bug in generated code must never cause a fallback to a
 different engine.
 
-Today only the Claude adapter surfaces a structured rate-limit signal; every
-other engine relies on message-pattern matching against `Error.message`. See
+Codex and `codex-app` additionally use the official machine-readable account
+snapshot described above. Other non-Claude engines rely on message-pattern
+matching against `Error.message`. See
 `docs/quota-aware-routing-plan.md` for the full design rationale and planned
 follow-up phases (`docs/` is gitignored in this repo as local scratch, but
 that specific file was force-added to persist on this branch).

@@ -6,7 +6,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { normalizePromptRoutingConfig } from '../../quota/quota-types.js';
-import { DEFAULT_ROUTING_SAFETY_MARGIN } from '../../constants.js';
+import {
+  DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+  DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
+  DEFAULT_ROUTING_SAFETY_MARGIN,
+} from '../../constants.js';
 
 describe('normalizePromptRoutingConfig', () => {
   it('fills in every default when given undefined', () => {
@@ -16,6 +20,10 @@ describe('normalizePromptRoutingConfig', () => {
       fallback: false,
       safetyMargin: DEFAULT_ROUTING_SAFETY_MARGIN,
       engines: {},
+      codexRateLimits: {
+        timeoutMs: DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+        ttlMs: DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
+      },
     });
   });
 
@@ -36,6 +44,10 @@ describe('normalizePromptRoutingConfig', () => {
       fallback: true,
       safetyMargin: 0.3,
       engines: { claude: { enabled: true, priority: 100 } },
+      codexRateLimits: {
+        timeoutMs: DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+        ttlMs: DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
+      },
     });
     expect(result).toEqual({
       enabled: true,
@@ -43,6 +55,20 @@ describe('normalizePromptRoutingConfig', () => {
       fallback: true,
       safetyMargin: 0.3,
       engines: { claude: { enabled: true, priority: 100 } },
+      codexRateLimits: {
+        timeoutMs: DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+        ttlMs: DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
+      },
+    });
+  });
+
+  it('normalizes the configurable Codex read timeout and cache TTL', () => {
+    expect(normalizePromptRoutingConfig({ codexRateLimits: { timeoutMs: 250, ttlMs: 5_000 } }).codexRateLimits).toEqual(
+      { timeoutMs: 250, ttlMs: 5_000 },
+    );
+    expect(normalizePromptRoutingConfig({ codexRateLimits: { timeoutMs: 0, ttlMs: NaN } }).codexRateLimits).toEqual({
+      timeoutMs: DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+      ttlMs: DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
     });
   });
 

@@ -19,8 +19,10 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { PersistentCodexAppServerSession } = await import('../persistent-codex-app-session.js');
+const { CodexAppServerRateLimitsReader } = await import('../quota/codex-rate-limits.js');
 
 interface WrittenMsg {
+  jsonrpc?: string;
   id?: number;
   method?: string;
   params?: Record<string, unknown>;
@@ -270,5 +272,27 @@ describe('PersistentCodexAppServerSession v2 RPCs', () => {
     expect(session.codexThreadId).toBe('fresh1');
     expect(proc.written.some((m) => m.method === 'thread/resume')).toBe(true);
     expect(proc.written.some((m) => m.method === 'thread/start')).toBe(true);
+  });
+});
+
+describe('Codex App Server account reader', () => {
+  beforeEach(() => mockSpawn.mockReset());
+
+  it('uses only initialize + account/rateLimits/read and never starts a thread or turn', async () => {
+    const expected = { rateLimits: { limitId: 'codex' } };
+    const proc = createMockProc((message) => {
+      if (message.method === 'initialize') return {};
+      if (message.method === 'account/rateLimits/read') return expected;
+      return {};
+    });
+    mockSpawn.mockReturnValue(proc);
+    const reader = new CodexAppServerRateLimitsReader('codex-test');
+
+    await expect(reader.readRateLimits()).resolves.toEqual(expected);
+    expect(proc.written.map((message) => message.method)).toEqual(['initialize', 'account/rateLimits/read']);
+    expect(proc.written.every((message) => message.jsonrpc === undefined)).toBe(true);
+    expect(proc.written.some((message) => message.method === 'thread/start')).toBe(false);
+    expect(proc.written.some((message) => message.method === 'turn/start')).toBe(false);
+    reader.stop();
   });
 });

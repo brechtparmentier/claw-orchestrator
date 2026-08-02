@@ -143,4 +143,19 @@ describe('QuotaManager', () => {
     qm.setExhausted('claude', 'manual budget exhausted');
     expect(qm.getSnapshot('claude').state).toBe('exhausted');
   });
+
+  it('uses an official provider snapshot unless a stronger local cooldown is active', () => {
+    const { clock } = withClock();
+    const qm = new QuotaManager(clock);
+    qm.recordSuccess('codex');
+    qm.setProviderSnapshot('codex', {
+      state: 'degraded',
+      reason: 'official quota 90% used',
+      observedAt: new Date(clock()).toISOString(),
+    });
+    expect(qm.getSnapshot('codex').state).toBe('degraded');
+
+    qm.recordFailure('codex', 'quota', 'live rate limit');
+    expect(qm.getSnapshot('codex').state).toBe('cooldown');
+  });
 });
