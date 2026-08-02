@@ -82,9 +82,27 @@
             "default": 0.15,
             "description": "0..1 margin applied before a degraded engine is scored as unusable"
           },
+          "codexRateLimits": {
+            "type": "object",
+            "description": "Read-only official Codex App Server quota check settings",
+            "properties": {
+              "timeoutMs": {
+                "type": "number",
+                "minimum": 1,
+                "default": 1500,
+                "description": "Maximum time the official account/rateLimits/read may delay routing"
+              },
+              "ttlMs": {
+                "type": "number",
+                "minimum": 1,
+                "default": 30000,
+                "description": "Cache duration for successful and unknown Codex quota snapshots"
+              }
+            }
+          },
           "engines": {
             "type": "object",
-            "description": "Per-engine routing config, keyed by EngineType (claude, codex, gemini, cursor, agy, opencode, custom). Engines absent from this map are excluded from routing.",
+            "description": "Per-engine routing config, keyed by EngineType (claude, codex, codex-app, gemini, cursor, agy, opencode, custom). Engines absent from this map are excluded from routing.",
             "additionalProperties": {
               "type": "object",
               "properties": {

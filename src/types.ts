@@ -9,7 +9,7 @@ export type { ModelPricing, ProviderName, ModelDef };
 
 // Re-export quota-aware routing config type (see src/quota/) for use in PluginConfig
 import type { PromptRoutingConfig } from './quota/quota-types.js';
-export type { PromptRoutingConfig, PromptRoutingEngineConfig } from './quota/quota-types.js';
+export type { CodexRateLimitsConfig, PromptRoutingConfig, PromptRoutingEngineConfig } from './quota/quota-types.js';
 export {
   getModelPricing,
   overrideModelPricing,

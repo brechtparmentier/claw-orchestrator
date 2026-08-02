@@ -2,7 +2,11 @@
  * Shared types for quota-aware prompt routing.
  */
 
-import { DEFAULT_ROUTING_SAFETY_MARGIN } from '../constants.js';
+import {
+  DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+  DEFAULT_CODEX_RATE_LIMIT_TTL_MS,
+  DEFAULT_ROUTING_SAFETY_MARGIN,
+} from '../constants.js';
 import type { EngineType } from '../types.js';
 
 // ─── Quota State ─────────────────────────────────────────────────────────────
@@ -37,6 +41,13 @@ export interface PromptRoutingEngineConfig {
   priority: number;
 }
 
+export interface CodexRateLimitsConfig {
+  /** Hard upper bound for initialize + account/rateLimits/read. */
+  timeoutMs: number;
+  /** Cache duration for successful and unknown snapshots. */
+  ttlMs: number;
+}
+
 export interface PromptRoutingConfig {
   /** Master feature flag. Default false — routing never runs unless explicitly enabled. */
   enabled: boolean;
@@ -55,8 +66,10 @@ export interface PromptRoutingConfig {
   fallback: boolean;
   /** Safety margin (0..1) applied before a 'degraded' engine is treated as effectively unusable. */
   safetyMargin: number;
-  /** Per-engine overrides. Engines absent from this map are treated as enabled with priority 0. */
+  /** Routing candidates. Engines absent from this map are excluded. */
   engines: Partial<Record<EngineType, PromptRoutingEngineConfig>>;
+  /** Official Codex App Server account quota reader settings. */
+  codexRateLimits?: CodexRateLimitsConfig;
 }
 
 // ─── Routing Decision ─────────────────────────────────────────────────────────
@@ -108,5 +121,13 @@ export function normalizePromptRoutingConfig(input: Partial<PromptRoutingConfig>
     fallback: input?.fallback ?? false,
     safetyMargin,
     engines: input?.engines ?? {},
+    codexRateLimits: {
+      timeoutMs: positiveFiniteOrDefault(input?.codexRateLimits?.timeoutMs, DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS),
+      ttlMs: positiveFiniteOrDefault(input?.codexRateLimits?.ttlMs, DEFAULT_CODEX_RATE_LIMIT_TTL_MS),
+    },
   };
+}
+
+function positiveFiniteOrDefault(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }

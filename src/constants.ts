@@ -119,6 +119,10 @@ export const QUOTA_COOLDOWN_MAX_MS = 900_000;
 export const QUOTA_RELIABILITY_WINDOW = 20;
 /** Default safety margin (0..1) applied before treating a degraded engine as exhausted */
 export const DEFAULT_ROUTING_SAFETY_MARGIN = 0.15;
+/** Maximum time an official Codex rate-limit read may delay routing. */
+export const DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS = 1_500;
+/** How long an official Codex rate-limit snapshot (including unknown) is reused. */
+export const DEFAULT_CODEX_RATE_LIMIT_TTL_MS = 30_000;
 
 // ─── Session Events ─────────────────────────────────────────────────────────
 

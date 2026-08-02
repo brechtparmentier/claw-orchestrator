@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/fbd2b0ea-28d8-4387-9894-c29cf15ba030
 | **Ultraapp**                | A three-agent Opus council turns a five-question interview into a deployed web app — Tailwind UI, BYOK, file-queue runtime, smoke test, all live at `localhost:19000/forge/<slug>/`.                                            | [`ultraapp.md`](./skills/references/ultraapp.md)           |
 | **Embedded Dashboard**      | Three-tab UI for Autoloop, Council, and Forge with sidebar lifecycle controls, per-run live event streaming, and cookie-based auth via a `/login` redirect.                                                                     | [`dashboard.md`](./skills/references/dashboard.md)         |
 | **OpenAI-Compatible Proxy** | `POST /v1/chat/completions` translates OpenAI requests into native Anthropic, OpenAI, and Google calls and streams responses back in OpenAI shape. Point any OpenAI-SDK client at the orchestrator without changing call sites. | [`openai-compat.md`](./skills/references/openai-compat.md) |
-| **Quota-Aware Routing**     | Opt-in (`promptRouting.enabled`) engine selection for new sessions by quota health, reliability, and priority — deterministic, explainable (`clawo route-explain`), disabled by default. | [`prompt-routing.md`](./skills/references/prompt-routing.md) |
+| **Quota-Aware Routing**     | Opt-in (`promptRouting.enabled`) engine selection by quota health, reliability, and priority, including read-only official Codex App Server quota snapshots — deterministic, explainable (`clawo route-explain`), disabled by default. | [`prompt-routing.md`](./skills/references/prompt-routing.md) |
 
 The full 65-tool surface is enumerated in [`tools.md`](./skills/references/tools.md).
 

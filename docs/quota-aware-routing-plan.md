@@ -469,10 +469,20 @@ bestaande `GEMINI_BIN`/`AGY_BIN`-stijl env-overrides.
    `.message`, omdat HTTP-foutafhandeling elders in de codebase alleen
    `.message` leest, nooit `.cause`). Zie
    `skills/references/prompt-routing.md` voor het volledige gedrag.
-3. **v1.2 — per-engine machineleesbare quota-check**, indien en zodra een CLI
-   (Claude, Codex, …) een officieel `--usage`/`--quota`-commando aanbiedt.
-   Vervangt bron 1 in de `QuotaProvider`-prioriteitenlijst van "nog niet
-   beschikbaar" naar "actief".
+3. **v1.2 — officiële Codex-quota via App Server. GEÏMPLEMENTEERD**
+   (`feat/codex-rate-limits-v1.2`). De bestaande newline-JSON-RPC-transportlaag
+   is uit de Codex-sessie geïsoleerd en wordt ook gebruikt door één lazy,
+   gedeelde account-client. Voor een echte routeringsbeslissing met `codex`
+   of `codex-app` als kandidaat leest die uitsluitend
+   `account/rateLimits/read`; er wordt geen thread, turn, prompt of taak
+   gestart en resetcredits worden nooit verbruikt. `rateLimits` en
+   `rateLimitsByLimitId`, alle primary/secondary windows en meerdere buckets
+   worden conservatief gemapt op `QuotaSnapshot`. Eén accountsnapshot geldt
+   voor beide Codex-engines. Een korte configureerbare timeout (standaard
+   1500 ms) en TTL-cache (standaard 30 s, ook voor `unknown`) begrenzen de
+   latency; ontbrekende/ongeldige data en transport/protocolfouten falen veilig
+   naar `unknown`. `PromptRouter` blijft synchroon; alleen de al-async
+   `SessionManager`-start/fallback ververst vooraf de snapshot.
 4. **v1.3 — reliability-tracking verfijnen**: sliding-window
    succes/faalratio per engine per taaktype, i.p.v. de simpele teller uit v1.
 5. **v1.4 — dashboard-integratie**: routing-status en `--explain`-traces

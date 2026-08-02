@@ -22,9 +22,7 @@
  *     `thread/goal/cleared` notifications.
  */
 
-import { spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import * as readline from 'node:readline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -40,6 +38,7 @@ import type {
 } from './types.js';
 import { getModelPricing, resolveAlias, getContextWindow } from './models.js';
 import { SESSION_EVENT, MAX_HISTORY_ITEMS, DEFAULT_HISTORY_LIMIT } from './constants.js';
+import { CodexAppServerTransport } from './codex-app-server-transport.js';
 
 // ─── Hand-translated protocol types (subset we use) ────────────────────────
 //
@@ -105,23 +104,14 @@ interface TurnCompletedNotification {
 
 // ─── PersistentCodexAppServerSession ───────────────────────────────────────
 
-interface PendingRequest {
-  resolve: (result: unknown) => void;
-  reject: (error: Error) => void;
-  method: string;
-}
-
 export class PersistentCodexAppServerSession extends EventEmitter implements ISession {
   private options: SessionConfig;
   private codexBin: string;
-  private proc: ChildProcess | null = null;
-  private _rl: readline.Interface | null = null;
+  private transport: CodexAppServerTransport | null = null;
   private _isReady = false;
   private _isPaused = false;
   private _isBusy = false;
   private _startTime: string | null = null;
-  private _nextRpcId = 1;
-  private pendingRequests = new Map<number, PendingRequest>();
   private _history: Array<{ time: string; type: string; event: unknown }> = [];
 
   // Per-session state populated by notifications
@@ -155,7 +145,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   // ── Property Accessors ─────────────────────────────────────────────────
 
   get pid(): number | undefined {
-    return this.proc?.pid ?? undefined;
+    return this.transport?.pid;
   }
   get isReady(): boolean {
     return this._isReady;
@@ -181,37 +171,31 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
       if (!fs.existsSync(this.options.cwd)) fs.mkdirSync(this.options.cwd, { recursive: true });
     }
 
-    const args = ['app-server', '--listen', 'stdio://', '--enable', 'goals'];
-    this.proc = spawn(this.codexBin, args, {
+    this.transport = new CodexAppServerTransport({
+      codexBin: this.codexBin,
+      args: ['app-server', '--listen', 'stdio://', '--enable', 'goals'],
       cwd: this.options.cwd,
-      env: { ...process.env },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      onMessage: (message) => this._addHistory({ time: new Date().toISOString(), type: 'event', event: message }),
+      onNotification: (method, params) => this._dispatchNotification(method, params),
+      onStderr: (text) => this.emit(SESSION_EVENT.LOG, `[codex-app-stderr] ${text}`),
+      onUnparsedStdout: (text) => this.emit(SESSION_EVENT.LOG, `[codex-app-stdout] ${text}`),
+      onExit: (code) => {
+        this._isReady = false;
+        if (this.turnReject) {
+          this.turnReject(new Error(`codex app-server exited mid-turn (code=${code})`));
+          this.turnReject = null;
+          this.turnResolve = null;
+        }
+        this.emit(SESSION_EVENT.CLOSE, code ?? 0);
+      },
     });
-
-    this._rl = readline.createInterface({ input: this.proc.stdout!, crlfDelay: Infinity });
-    this._rl.on('line', (line) => this._handleLine(line));
-
-    this.proc.stderr?.on('data', (data: Buffer) => {
-      this.emit(SESSION_EVENT.LOG, `[codex-app-stderr] ${data.toString()}`);
-    });
-
-    this.proc.on('exit', (code) => {
-      this._isReady = false;
-      // Reject any pending requests so callers don't hang.
-      for (const pending of this.pendingRequests.values()) {
-        pending.reject(new Error(`codex app-server exited (code=${code}) before responding`));
-      }
-      this.pendingRequests.clear();
-      if (this.turnReject) {
-        this.turnReject(new Error(`codex app-server exited mid-turn (code=${code})`));
-        this.turnReject = null;
-        this.turnResolve = null;
-      }
-      this.emit(SESSION_EVENT.CLOSE, code ?? 0);
-    });
+    // Avoid EventEmitter's special unhandled-'error' behavior; request callers
+    // receive the same error through their rejected promise.
+    this.transport.on('error', () => undefined);
+    this.transport.start();
 
     // 1. initialize
-    await this._request('initialize', {
+    await this.transport.request('initialize', {
       clientInfo: { name: 'claw-orchestrator', title: null, version: '3.0.0' },
     });
 
@@ -232,15 +216,15 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
     let threadResp: { thread?: { id?: string } };
     if (resumeId) {
       try {
-        threadResp = (await this._request('thread/resume', { threadId: resumeId, ...startParams })) as {
+        threadResp = (await this.transport.request('thread/resume', { threadId: resumeId, ...startParams })) as {
           thread?: { id?: string };
         };
       } catch (err) {
         this.emit(SESSION_EVENT.LOG, `[codex-app] thread/resume failed (${(err as Error).message}); starting fresh`);
-        threadResp = (await this._request('thread/start', startParams)) as { thread?: { id?: string } };
+        threadResp = (await this.transport.request('thread/start', startParams)) as { thread?: { id?: string } };
       }
     } else {
-      threadResp = (await this._request('thread/start', startParams)) as { thread?: { id?: string } };
+      threadResp = (await this.transport.request('thread/start', startParams)) as { thread?: { id?: string } };
     }
     if (!this.threadId && threadResp?.thread?.id) {
       this.threadId = threadResp.thread.id;
@@ -258,18 +242,8 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   }
 
   stop(): void {
-    if (this._rl) {
-      this._rl.close();
-      this._rl = null;
-    }
-    if (this.proc) {
-      try {
-        this.proc.kill('SIGTERM');
-      } catch {
-        // Already gone.
-      }
-      this.proc = null;
-    }
+    this.transport?.stop();
+    this.transport = null;
     this._isReady = false;
     this._isPaused = false;
   }
@@ -295,7 +269,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
 
     if (!options.waitForComplete) {
       this._fireAndForgetTurn(text).catch((err) => this.emit(SESSION_EVENT.ERROR, err));
-      return { requestId: this._nextRpcId, sent: true };
+      return { requestId: this.transport?.nextRequestId ?? 0, sent: true };
     }
 
     this._isBusy = true;
@@ -307,7 +281,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   }
 
   private async _fireAndForgetTurn(text: string): Promise<void> {
-    await this._request('turn/start', {
+    await this.transport!.request('turn/start', {
       threadId: this.threadId,
       input: [{ type: 'text', text, text_elements: [] }],
     });
@@ -342,7 +316,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
     }, timeout);
 
     try {
-      await this._request('turn/start', {
+      await this.transport!.request('turn/start', {
         threadId: this.threadId,
         input: [{ type: 'text', text, text_elements: [] }],
       });
@@ -351,64 +325,6 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
     } finally {
       clearTimeout(timer);
       this.removeListener(SESSION_EVENT.TEXT, onText);
-    }
-  }
-
-  // ── JSON-RPC plumbing ──────────────────────────────────────────────────
-
-  private _request(method: string, params: unknown): Promise<unknown> {
-    if (!this.proc?.stdin?.writable) {
-      return Promise.reject(new Error('codex app-server stdin not writable'));
-    }
-    const id = this._nextRpcId++;
-    const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
-    return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject, method });
-      this.proc!.stdin!.write(msg, (err) => {
-        if (err) {
-          this.pendingRequests.delete(id);
-          reject(err);
-        }
-      });
-    });
-  }
-
-  private _handleLine(line: string): void {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let msg: {
-      jsonrpc?: string;
-      id?: number;
-      method?: string;
-      params?: unknown;
-      result?: unknown;
-      error?: { code?: number; message?: string };
-    };
-    try {
-      msg = JSON.parse(trimmed);
-    } catch {
-      this.emit(SESSION_EVENT.LOG, `[codex-app-stdout] ${trimmed}`);
-      return;
-    }
-
-    this._addHistory({ time: new Date().toISOString(), type: 'event', event: msg });
-
-    // Response (has id, no method)
-    if (typeof msg.id === 'number' && msg.method === undefined) {
-      const pending = this.pendingRequests.get(msg.id);
-      if (!pending) return;
-      this.pendingRequests.delete(msg.id);
-      if (msg.error) {
-        pending.reject(new Error(`${pending.method} failed: ${msg.error.message ?? 'unknown error'}`));
-      } else {
-        pending.resolve(msg.result);
-      }
-      return;
-    }
-
-    // Notification (has method, no id)
-    if (msg.method) {
-      this._dispatchNotification(msg.method, msg.params);
     }
   }
 
@@ -545,7 +461,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
     // ISession contract returns a TurnResult. Wire it as a request, ignore
     // the response shape, and return a synthesized result.
     if (!this.threadId) throw new Error('No thread id');
-    await this._request('thread/compact/start', { threadId: this.threadId });
+    await this.transport!.request('thread/compact/start', { threadId: this.threadId });
     const event: StreamEvent = { type: 'result', result: 'Codex thread compaction started' };
     return { text: 'Codex thread compaction started', event };
   }
@@ -611,7 +527,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   async interrupt(): Promise<{ interrupted: boolean }> {
     if (!this.threadId) throw new Error('No thread id');
     if (!this.currentTurnId) return { interrupted: false };
-    await this._request('turn/interrupt', { threadId: this.threadId, turnId: this.currentTurnId });
+    await this.transport!.request('turn/interrupt', { threadId: this.threadId, turnId: this.currentTurnId });
     return { interrupted: true };
   }
 
@@ -622,7 +538,7 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   async steer(text: string): Promise<{ steered: boolean; turnId?: string; text?: string }> {
     if (!this.threadId) throw new Error('No thread id');
     if (this._isBusy && this.currentTurnId) {
-      const resp = (await this._request('turn/steer', {
+      const resp = (await this.transport!.request('turn/steer', {
         threadId: this.threadId,
         expectedTurnId: this.currentTurnId,
         input: [{ type: 'text', text, text_elements: [] }],
@@ -636,7 +552,9 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   /** Branch this thread into a new one (`thread/fork`); returns the forked thread id. */
   async forkThread(): Promise<{ threadId: string }> {
     if (!this.threadId) throw new Error('No thread id');
-    const resp = (await this._request('thread/fork', { threadId: this.threadId })) as { thread?: { id?: string } };
+    const resp = (await this.transport!.request('thread/fork', { threadId: this.threadId })) as {
+      thread?: { id?: string };
+    };
     const newId = resp?.thread?.id;
     if (!newId) throw new Error('thread/fork did not return a forked thread id');
     return { threadId: newId };
@@ -646,12 +564,12 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
   async rollback(numTurns: number): Promise<void> {
     if (!this.threadId) throw new Error('No thread id');
     if (!Number.isInteger(numTurns) || numTurns < 1) throw new Error('rollback: numTurns must be a positive integer');
-    await this._request('thread/rollback', { threadId: this.threadId, numTurns });
+    await this.transport!.request('thread/rollback', { threadId: this.threadId, numTurns });
   }
 
   /** List available models (`model/list`); returns the `data` array. */
   async listModels(): Promise<unknown[]> {
-    const resp = (await this._request('model/list', {})) as { data?: unknown[] };
+    const resp = (await this.transport!.request('model/list', {})) as { data?: unknown[] };
     return resp?.data ?? [];
   }
 
@@ -665,7 +583,10 @@ export class PersistentCodexAppServerSession extends EventEmitter implements ISe
     if (opts.archived !== undefined) params.archived = opts.archived;
     if (opts.cursor !== undefined) params.cursor = opts.cursor;
     if (opts.limit !== undefined) params.limit = opts.limit;
-    const resp = (await this._request('thread/list', params)) as { data?: unknown[]; nextCursor?: string | null };
+    const resp = (await this.transport!.request('thread/list', params)) as {
+      data?: unknown[];
+      nextCursor?: string | null;
+    };
     return { data: resp?.data ?? [], nextCursor: resp?.nextCursor ?? null };
   }
 

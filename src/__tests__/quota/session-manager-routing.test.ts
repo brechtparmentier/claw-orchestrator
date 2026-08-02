@@ -138,6 +138,22 @@ vi.mock('node:fs', async () => {
   return { ...patched, default: patched };
 });
 
+// Routing tests must never start a real Codex process. The provider itself is
+// tested separately with fake readers; here an unavailable fake keeps Codex's
+// official state `unknown`, matching the pre-v1.2 baseline for these cases.
+vi.mock('../../quota/codex-rate-limits.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../quota/codex-rate-limits.js')>();
+  return {
+    ...actual,
+    CodexAppServerRateLimitsReader: class {
+      readRateLimits(): Promise<unknown> {
+        return Promise.resolve({});
+      }
+      stop(): void {}
+    },
+  };
+});
+
 const { SessionManager } = await import('../../session-manager.js');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -233,6 +249,49 @@ describe('Quota-aware routing — SessionManager integration', () => {
       patchCreateSession(manager);
       await manager.startSession({ name: 'p1', cwd: '/tmp' });
       expect(engineCalls).toEqual(['claude']);
+      await manager.shutdown();
+    });
+
+    it('refreshes official Codex quota before routing and avoids an exhausted Codex candidate', async () => {
+      const readRateLimits = vi.fn().mockResolvedValue({
+        rateLimits: {
+          limitId: 'codex',
+          primary: { usedPercent: 100, windowDurationMins: 60, resetsAt: Math.floor(Date.now() / 1000) + 600 },
+          secondary: null,
+          rateLimitReachedType: 'primary',
+        },
+      });
+      const manager = new SessionManager(
+        {
+          promptRouting: routingConfig({
+            engines: {
+              codex: { enabled: true, priority: 100 },
+              'codex-app': { enabled: true, priority: 90 },
+              claude: { enabled: true, priority: 50 },
+            },
+          }),
+        },
+        undefined,
+        { readRateLimits },
+      );
+      patchCreateSession(manager);
+
+      await manager.startSession({ name: 'official-quota', cwd: '/tmp' });
+      expect(readRateLimits).toHaveBeenCalledOnce();
+      expect(engineCalls).toEqual(['claude']);
+      expect(manager.health().quota.codex?.state).toBe('cooldown');
+      expect(manager.health().quota['codex-app']?.state).toBe('cooldown');
+      await manager.shutdown();
+    });
+
+    it('an explicit engine bypasses both routing and the official quota read', async () => {
+      const readRateLimits = vi.fn().mockResolvedValue({});
+      const manager = new SessionManager({ promptRouting: routingConfig() }, undefined, { readRateLimits });
+      patchCreateSession(manager);
+
+      await manager.startSession({ name: 'explicit-codex', cwd: '/tmp', engine: 'codex' });
+      expect(readRateLimits).not.toHaveBeenCalled();
+      expect(engineCalls).toEqual(['codex']);
       await manager.shutdown();
     });
 

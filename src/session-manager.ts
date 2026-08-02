@@ -125,6 +125,11 @@ import { PromptRouter } from './quota/prompt-router.js';
 import { classifyError } from './quota/classify-error.js';
 import { normalizePromptRoutingConfig } from './quota/quota-types.js';
 import type { RouteDecision, RouteInput } from './quota/quota-types.js';
+import {
+  CodexAppServerRateLimitsReader,
+  CodexRateLimitsProvider,
+  type CodexRateLimitsReader,
+} from './quota/codex-rate-limits.js';
 import { InboxManager, type SessionLookup } from './inbox-manager.js';
 import { sanitizeCwd, validateName } from './validation.js';
 import { PersistentClaudeSession } from './persistent-session.js';
@@ -511,13 +516,14 @@ export class SessionManager {
   private _circuitBreaker = new CircuitBreaker();
   private _quotaManager: QuotaManager;
   private _promptRouter: PromptRouter;
+  private _codexRateLimitsProvider: CodexRateLimitsProvider;
   private _inbox = new InboxManager();
   private logger: Logger;
   private _ultraappManager: UltraappManager | null = null;
   private _ultraappRouter: UltraappRouter | null = null;
   private _ultraappRuntimeMode: 'host' | 'docker' = 'host';
 
-  constructor(config?: Partial<PluginConfig>, logger?: Logger) {
+  constructor(config?: Partial<PluginConfig>, logger?: Logger, codexRateLimitsReader?: CodexRateLimitsReader) {
     this.logger = logger || createConsoleLogger('SessionManager');
     // Normalized once, up front — every missing sub-field (engines,
     // safetyMargin, fallback, strategy) gets its documented default here, so
@@ -543,6 +549,16 @@ export class SessionManager {
 
     this._quotaManager = new QuotaManager(Date.now, promptRouting.safetyMargin);
     this._promptRouter = new PromptRouter(promptRouting, this._quotaManager, this._circuitBreaker);
+    const codexRateLimits = promptRouting.codexRateLimits!;
+    this._codexRateLimitsProvider = new CodexRateLimitsProvider(
+      codexRateLimitsReader ?? new CodexAppServerRateLimitsReader(process.env.CODEX_BIN),
+      {
+        timeoutMs: codexRateLimits.timeoutMs,
+        ttlMs: codexRateLimits.ttlMs,
+        safetyMargin: promptRouting.safetyMargin,
+        logger: this.logger,
+      },
+    );
 
     // Load persisted session registry from disk
     this.persistedSessions = loadPersistedSessions();
@@ -680,6 +696,7 @@ export class SessionManager {
     let engine: EngineType;
     let routedByRouter = false;
     if (!config.engine && !persisted?.engine && this.pluginConfig.promptRouting?.enabled) {
+      await this._refreshCodexQuota();
       const routeDecision = this._promptRouter.route({});
       engine = routeDecision.engine;
       routedByRouter = true;
@@ -913,6 +930,7 @@ export class SessionManager {
       // The engine that just failed is already in quota cooldown (recorded
       // by the caller just before this method runs), so it's naturally
       // excluded from this candidate set — no need to pass it explicitly.
+      await this._refreshCodexQuota();
       decision = this._promptRouter.route({});
     } catch (routeErr) {
       // The ORIGINAL error is the primary message — a caller (including HTTP
@@ -1418,6 +1436,18 @@ export class SessionManager {
     return this._promptRouter.route(input);
   }
 
+  /** Refresh the shared official Codex account snapshot when Codex is a candidate. */
+  private async _refreshCodexQuota(): Promise<void> {
+    const engines = this.pluginConfig.promptRouting?.engines;
+    if (!engines?.codex?.enabled && !engines?.['codex-app']?.enabled) return;
+
+    const snapshot = await this._codexRateLimitsProvider.getSnapshot();
+    // `codex exec` and `codex app-server` use the same authenticated Codex
+    // account and metered buckets, so one account snapshot applies to both.
+    this._quotaManager.setProviderSnapshot('codex', snapshot);
+    this._quotaManager.setProviderSnapshot('codex-app', snapshot);
+  }
+
   /** Return plugin version from package.json */
   getVersion(): string {
     return getPluginVersion();
@@ -1440,6 +1470,7 @@ export class SessionManager {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    this._codexRateLimitsProvider.stop();
     // Stop ultrareview pollers
     for (const [, timer] of this.ultrareviewPollers) clearInterval(timer);
     this.ultrareviewPollers.clear();

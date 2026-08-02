@@ -43,6 +43,7 @@ function freshState(): EngineState {
 
 export class QuotaManager {
   private engines = new Map<EngineType, EngineState>();
+  private providerSnapshots = new Map<EngineType, QuotaSnapshot>();
 
   constructor(
     private clock: () => number = Date.now,
@@ -127,13 +128,17 @@ export class QuotaManager {
     state.lastFailureReason = reason;
   }
 
+  /** Replace the latest machine-readable provider observation for an engine. */
+  setProviderSnapshot(engine: EngineType, snapshot: QuotaSnapshot): void {
+    this.providerSnapshots.set(engine, snapshot);
+  }
+
   getSnapshot(engine: EngineType): QuotaSnapshot {
     const state = this.engines.get(engine);
     const now = this.clock();
     const observedAt = new Date(now).toISOString();
-    if (!state) {
-      return { state: 'unknown', observedAt };
-    }
+    const providerSnapshot = this.providerSnapshots.get(engine);
+    if (!state) return providerSnapshot ?? { state: 'unknown', observedAt };
 
     if (state.authFailed) {
       return { state: 'exhausted', reason: state.lastFailureReason || 'authentication failure', observedAt };
@@ -149,6 +154,12 @@ export class QuotaManager {
         observedAt,
       };
     }
+
+    // A real, currently active local cooldown/auth failure is stronger than a
+    // cached provider observation. Otherwise the official provider is the
+    // authoritative quota state, including `unknown` when its data is absent
+    // or unavailable.
+    if (providerSnapshot) return providerSnapshot;
 
     const reliability = this.getReliability(engine);
     const degradedThreshold = 1 - this.safetyMargin;
@@ -172,6 +183,7 @@ export class QuotaManager {
   }
 
   getAllStatuses(): Record<string, QuotaSnapshot> {
-    return Object.fromEntries([...this.engines.keys()].sort().map((engine) => [engine, this.getSnapshot(engine)]));
+    const engineNames = new Set<EngineType>([...this.engines.keys(), ...this.providerSnapshots.keys()]);
+    return Object.fromEntries([...engineNames].sort().map((engine) => [engine, this.getSnapshot(engine)]));
   }
 }
