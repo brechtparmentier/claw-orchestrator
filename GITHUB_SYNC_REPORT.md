@@ -13,6 +13,7 @@
 | Commit | Purpose | Pull request | Result |
 | --- | --- | --- | --- |
 | `39942374ee8ba77e7b653b402d5699fb98823848` | Official Codex quota-aware routing v1.2 | [#6](https://github.com/brechtparmentier/claw-orchestrator/pull/6), `feat/codex-rate-limits-v1.2` → `main` | Merged as `1bbca96557e7ea84e42662fdefc322a04d276a8c` at `2026-08-02T16:35:23Z` |
+| `2dbd37b46369b136568cc1514879916f2a56a649` | Initial synchronization report | [#7](https://github.com/brechtparmentier/claw-orchestrator/pull/7), `chore/github-sync-report-20260802` → `main` | Pending when report metadata was generated |
 
 The report itself is delivered through a separate pull request. Its merge
 timestamp and resulting final `main` SHA are intentionally recorded in the
